@@ -1,5 +1,10 @@
 package rwmutex
 
+import (
+	"primitives/internal/futex"
+	"sync/atomic"
+)
+
 const writer = 1 << 31
 
 type RWMutex struct {
@@ -7,17 +12,59 @@ type RWMutex struct {
 }
 
 func (rw *RWMutex) RLock() {
-	panic("не реализовано")
+	for {
+		state := atomic.LoadUint32(&rw.state)
+
+		if state&writer != 0 {
+			futex.Wait(&rw.state, state)
+			continue
+		}
+
+		if atomic.CompareAndSwapUint32(&rw.state, state, state+1) {
+			return
+		}
+	}
 }
 
 func (rw *RWMutex) RUnlock() {
-	panic("не реализовано")
+	for {
+		state := atomic.LoadUint32(&rw.state)
+
+		if state&writer != 0 || state == 0 {
+			panic("RUnlock of unlocked RWMutex")
+		}
+
+		next := state - 1
+
+		if atomic.CompareAndSwapUint32(&rw.state, state, next) {
+			if next == 0 {
+				futex.WakeAll(&rw.state)
+			}
+			return
+		}
+	}
 }
 
 func (rw *RWMutex) Lock() {
-	panic("не реализовано")
+	for {
+		if atomic.CompareAndSwapUint32(&rw.state, 0, writer) {
+			return
+		}
+
+		state := atomic.LoadUint32(&rw.state)
+
+		if state == 0 {
+			continue
+		}
+
+		futex.Wait(&rw.state, state)
+	}
 }
 
 func (rw *RWMutex) Unlock() {
-	panic("не реализовано")
+	if !atomic.CompareAndSwapUint32(&rw.state, writer, 0) {
+		panic("Unlock of unlocked RWMutex")
+	}
+
+	futex.WakeAll(&rw.state)
 }
