@@ -3,7 +3,6 @@ package barrier
 import (
 	"math"
 	"primitives/internal/futex"
-	"sync"
 	"sync/atomic"
 )
 
@@ -11,7 +10,7 @@ type Barrier struct {
 	need    uint32
 	arrived uint32
 	round   uint32
-	mu      sync.Mutex
+	state   uint32
 }
 
 func New(n int) *Barrier {
@@ -27,11 +26,19 @@ func New(n int) *Barrier {
 		need:    uint32(n),
 		arrived: 0,
 		round:   0,
+		state:   0,
 	}
 }
 
 func (b *Barrier) Wait() {
-	b.mu.Lock()
+	for {
+		if atomic.CompareAndSwapUint32(&b.state, 0, 1) {
+			break
+		}
+
+		futex.Wait(&b.state, 1)
+	}
+
 	round := atomic.LoadUint32(&b.round)
 	b.arrived++
 	last := b.arrived == b.need
@@ -41,7 +48,8 @@ func (b *Barrier) Wait() {
 		atomic.AddUint32(&b.round, 1)
 	}
 
-	b.mu.Unlock()
+	atomic.StoreUint32(&b.state, 0)
+	futex.Wake(&b.state)
 
 	if last {
 		futex.WakeAll(&b.round)
