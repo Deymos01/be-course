@@ -1,6 +1,7 @@
 package waitgroup
 
 import (
+	"math"
 	"primitives/internal/futex"
 	"sync/atomic"
 )
@@ -20,13 +21,29 @@ func (wg *WaitGroup) Add(delta int) {
 		var next uint32
 
 		if delta > 0 {
+			inc := uint64(delta)
+
+			if inc > math.MaxUint32 {
+				panic("WaitGroup delta overflow uint32")
+			}
+
+			if inc > math.MaxUint32-uint64(prev) {
+				panic("WaitGroup counter overflow")
+			}
+
 			next = prev + uint32(delta)
 		} else {
-			if prev < uint32(-delta) {
+			dec := uint64(-(delta + 1)) + 1
+
+			if dec > math.MaxUint32 {
+				panic("WaitGroup delta overflow uint32")
+			}
+
+			if dec > uint64(prev) {
 				panic("negative WaitGroup counter")
 			}
 
-			next = prev - uint32(-delta)
+			next = uint32(uint64(prev) - dec)
 		}
 
 		if atomic.CompareAndSwapUint32(&wg.count, prev, next) {
