@@ -1,6 +1,7 @@
 package semaphore
 
 import (
+	"math"
 	"primitives/internal/futex"
 	"sync/atomic"
 )
@@ -10,6 +11,14 @@ type Semaphore struct {
 }
 
 func New(n int) *Semaphore {
+	if n < 0 {
+		panic("semaphore: negative initial permits")
+	}
+
+	if n > math.MaxUint32 {
+		panic("semaphore: initial permits overflow uint32")
+	}
+
 	return &Semaphore{
 		permits: uint32(n),
 	}
@@ -47,6 +56,10 @@ func (s *Semaphore) TryAcquire() bool {
 func (s *Semaphore) Release() {
 	for {
 		permits := atomic.LoadUint32(&s.permits)
+
+		if permits == math.MaxUint32 {
+			panic("semaphore: permits overflow uint32")
+		}
 
 		if atomic.CompareAndSwapUint32(&s.permits, permits, permits+1) {
 			futex.Wake(&s.permits)
