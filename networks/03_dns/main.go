@@ -8,10 +8,23 @@ import (
 	"math"
 	"math/rand"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	headerLen       = 12
+	recordHeaderLen = 10
+	classIN         = 1
+	flagQR          = 0x8000
+	flagTC          = 0x0200
+	maxDatagram     = 65535
+	maxLabelLen     = 63
+	maxNameLen      = 255
+	responseTimeout = 5 * time.Second
 )
 
 var codes = map[string]uint16{
@@ -32,6 +45,19 @@ var typeNames = map[uint16]string{
 	28: "AAAA",
 }
 
+type question struct {
+	name  string
+	qtype uint16
+	class uint16
+}
+
+type response struct {
+	rcode   byte
+	answers []string
+	minTTL  uint32
+	records int
+}
+
 type CacheEntry struct {
 	answers []string
 	exp     time.Time
@@ -40,21 +66,25 @@ type CacheEntry struct {
 var cache = make(map[string]CacheEntry)
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	if len(os.Args) != 3 {
 		fmt.Fprintf(os.Stderr, "usage: %s <host> <port>\n", os.Args[0])
-		os.Exit(2)
+		return 2
 	}
 
 	ip := net.ParseIP(os.Args[1])
 	if ip == nil {
 		fmt.Fprintf(os.Stderr, "invalid server address %q\n", os.Args[1])
-		os.Exit(1)
+		return 1
 	}
 
 	port, err := strconv.Atoi(os.Args[2])
 	if err != nil || port < 1 || port > 65535 {
 		fmt.Fprintf(os.Stderr, "invalid port %q\n", os.Args[2])
-		os.Exit(1)
+		return 1
 	}
 
 	addr := &net.UDPAddr{
@@ -64,8 +94,9 @@ func main() {
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial UDP: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	defer conn.Close()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -74,132 +105,252 @@ func main() {
 		if len(fields) != 2 {
 			continue
 		}
+		name, typeName := fields[0], fields[1]
 
-		cacheKey := strings.ToLower(fields[0]) + "|" + fields[1]
-		if entry, ok := cache[cacheKey]; ok && time.Now().Before(entry.exp) {
-			fmt.Printf("query %s %s\nstatus NOERROR\n", fields[0], fields[1])
-			for _, ans := range entry.answers {
-				fmt.Println(ans)
-			}
-			fmt.Println("end")
+		qtype, ok := codes[typeName]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown query type %q\n", typeName)
+			return 2
+		}
+
+		key := canonicalName(name) + "|" + strconv.Itoa(int(qtype))
+		if entry, ok := cache[key]; ok && time.Now().Before(entry.exp) {
+			printBlock(name, typeName, response{answers: entry.answers})
 			continue
 		}
 
-		qtype, ok := codes[fields[1]]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "unknown query type %q\n", fields[1])
-			os.Exit(1)
-		}
-		txID := uint16(rand.Intn(65536))
-		packet, err := buildQuery(fields[0], qtype, txID)
+		txID := uint16(rand.Intn(1 << 16))
+		packet, err := buildQuery(name, qtype, txID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "build query: %v\n", err)
-			os.Exit(1)
+			return 2
 		}
-		if _, err := conn.Write(packet); err != nil {
-			fmt.Fprintf(os.Stderr, "send query: %v\n", err)
-			os.Exit(1)
+		want := question{name: canonicalName(name), qtype: qtype, class: classIN}
+
+		res, err := exchange(conn, packet, txID, want)
+		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				fmt.Printf("query %s %s\nstatus TIMEOUT\nend\n", name, typeName)
+				return 1
+			}
+			fmt.Fprintf(os.Stderr, "exchange: %v\n", err)
+			return 1
 		}
-		deadline := time.Now().Add(5 * time.Second)
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			fmt.Fprintf(os.Stderr, "set read deadline: %v\n", err)
-			os.Exit(1)
-		}
 
-		for {
-			buffer := make([]byte, 4096)
-			n, err := conn.Read(buffer)
-			if err != nil {
-				var netErr net.Error
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					fmt.Printf("query %s %s\nstatus TIMEOUT\nend\n", fields[0], fields[1])
-					os.Exit(1)
-				}
-				fmt.Fprintf(os.Stderr, "read response: %v\n", err)
-				os.Exit(1)
+		printBlock(name, typeName, res)
+		if res.rcode == 0 && res.records > 0 && res.minTTL > 0 {
+			cache[key] = CacheEntry{
+				answers: res.answers,
+				exp:     time.Now().Add(time.Duration(res.minTTL) * time.Second),
 			}
-
-			if n < 12 {
-				continue
-			}
-			respTxID := binary.BigEndian.Uint16(buffer[0:2])
-			if respTxID != txID {
-				continue
-			}
-
-			rcode := buffer[3] & 0x0F
-			offset := 12
-			_, offset = readName(buffer, offset)
-			offset += 4
-			rcodeString := convertRcode(rcode)
-
-			fmt.Printf("query %s %s\nstatus %s\n", fields[0], fields[1], rcodeString)
-
-			anCount := binary.BigEndian.Uint16(buffer[6:8])
-			var cachedAnswers []string
-			minTTL := uint32(math.MaxUint32)
-
-			for i := 0; i < int(anCount); i++ {
-				_, offset = readName(buffer, offset)
-
-				rtype := binary.BigEndian.Uint16(buffer[offset : offset+2])
-				offset += 4
-
-				ttl := binary.BigEndian.Uint32(buffer[offset : offset+4])
-				offset += 4
-				minTTL = min(minTTL, ttl)
-
-				rdlen := binary.BigEndian.Uint16(buffer[offset : offset+2])
-				offset += 2
-
-				rdata := buffer[offset : offset+int(rdlen)]
-
-				var value string
-				switch rtype {
-				case 1, 28: // "A", "AAAA"
-					value = net.IP(rdata).String()
-				case 2, 5: // "NS", "CNAME"
-					value, _ = readName(buffer, offset)
-				case 15: // "MX"
-					priority := binary.BigEndian.Uint16(rdata[0:2])
-					name, _ := readName(buffer, offset+2)
-					value = fmt.Sprintf("%d %s", priority, name)
-				case 16: // "TXT"
-					var parts []string
-					pos := 0
-					for pos < len(rdata) {
-						strLen := int(rdata[pos])
-						pos++
-						parts = append(parts, string(rdata[pos:pos+strLen]))
-						pos += strLen
-					}
-					value = strings.Join(parts, "")
-				default:
-					offset += int(rdlen)
-					continue
-				}
-
-				offset += int(rdlen)
-				answer := fmt.Sprintf("answer %s %s %d\n", typeNames[rtype], value, ttl)
-				cachedAnswers = append(cachedAnswers, answer)
-				fmt.Print(answer)
-			}
-
-			fmt.Println("end")
-
-			if rcode == 0 && anCount > 0 && minTTL > 0 && minTTL != math.MaxUint32 {
-				cache[cacheKey] = CacheEntry{
-					answers: cachedAnswers,
-					exp:     time.Now().Add(time.Duration(minTTL) * time.Second),
-				}
-			}
-
-			break
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
-		os.Exit(1)
+		return 1
+	}
+	return 0
+}
+
+func exchange(conn *net.UDPConn, packet []byte, txID uint16, want question) (response, error) {
+	if _, err := conn.Write(packet); err != nil {
+		return response{}, fmt.Errorf("send query: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(responseTimeout)); err != nil {
+		return response{}, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	buf := make([]byte, maxDatagram)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return response{}, err
+		}
+		msg := buf[:n]
+		if len(msg) < headerLen {
+			continue
+		}
+		if binary.BigEndian.Uint16(msg[0:2]) != txID {
+			continue
+		}
+		res, err := parseResponse(msg, want)
+		if err != nil {
+			continue
+		}
+		return res, nil
+	}
+}
+
+func parseResponse(msg []byte, want question) (response, error) {
+	res := response{minTTL: math.MaxUint32}
+	if len(msg) < headerLen {
+		return res, errors.New("short header")
+	}
+	flags := binary.BigEndian.Uint16(msg[2:4])
+	if flags&flagQR == 0 {
+		return res, errors.New("not a response")
+	}
+	if flags&flagTC != 0 {
+		return res, errors.New("truncated response")
+	}
+	res.rcode = byte(flags & 0x0F)
+
+	qd := int(binary.BigEndian.Uint16(msg[4:6]))
+	an := int(binary.BigEndian.Uint16(msg[6:8]))
+
+	offset := headerLen
+	for i := range qd {
+		name, next, err := readName(msg, offset, len(msg))
+		if err != nil {
+			return res, fmt.Errorf("question name: %w", err)
+		}
+		if next+4 > len(msg) {
+			return res, errors.New("short question")
+		}
+		qtype := binary.BigEndian.Uint16(msg[next : next+2])
+		class := binary.BigEndian.Uint16(msg[next+2 : next+4])
+		if i == 0 {
+			if !strings.EqualFold(name, want.name) || qtype != want.qtype || class != want.class {
+				return res, errors.New("question mismatch")
+			}
+		}
+		offset = next + 4
+	}
+
+	for i := range an {
+		_, next, err := readName(msg, offset, len(msg))
+		if err != nil {
+			return res, fmt.Errorf("answer %d name: %w", i+1, err)
+		}
+		if next+recordHeaderLen > len(msg) {
+			return res, errors.New("short record header")
+		}
+		rtype := binary.BigEndian.Uint16(msg[next : next+2])
+		ttl := binary.BigEndian.Uint32(msg[next+4 : next+8])
+		rdlen := int(binary.BigEndian.Uint16(msg[next+8 : next+10]))
+
+		start := next + recordHeaderLen
+		end := start + rdlen
+		if end > len(msg) {
+			return res, errors.New("short rdata")
+		}
+
+		res.records++
+		if ttl < res.minTTL {
+			res.minTTL = ttl
+		}
+		offset = end
+
+		if _, ok := typeNames[rtype]; !ok {
+			continue
+		}
+		value, err := formatValue(rtype, msg, start, end)
+		if err != nil {
+			return res, fmt.Errorf("answer %d: %w", i+1, err)
+		}
+		res.answers = append(res.answers,
+			fmt.Sprintf("answer %s %s %d", typeNames[rtype], value, ttl))
+	}
+	return res, nil
+}
+
+func formatValue(rtype uint16, msg []byte, start, end int) (string, error) {
+	rdata := msg[start:end]
+	switch rtype {
+	case 1: // A
+		if len(rdata) != 4 {
+			return "", fmt.Errorf("A: rdata length %d, want 4", len(rdata))
+		}
+		return netip.AddrFrom4([4]byte(rdata)).String(), nil
+	case 28: // AAAA
+		if len(rdata) != 16 {
+			return "", fmt.Errorf("AAAA: rdata length %d, want 16", len(rdata))
+		}
+		return netip.AddrFrom16([16]byte(rdata)).String(), nil
+	case 2, 5: // NS, CNAME
+		name, _, err := readName(msg, start, end)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", typeNames[rtype], err)
+		}
+		return name, nil
+	case 15: // MX
+		if len(rdata) < 2 {
+			return "", errors.New("MX: missing preference")
+		}
+		pref := binary.BigEndian.Uint16(rdata[:2])
+		name, _, err := readName(msg, start+2, end)
+		if err != nil {
+			return "", fmt.Errorf("MX: %w", err)
+		}
+		return fmt.Sprintf("%d %s", pref, name), nil
+	case 16: // TXT
+		var sb strings.Builder
+		for pos := 0; pos < len(rdata); {
+			n := int(rdata[pos])
+			pos++
+			if pos+n > len(rdata) {
+				return "", errors.New("TXT: string exceeds rdata")
+			}
+			sb.Write(rdata[pos : pos+n])
+			pos += n
+		}
+		return sb.String(), nil
+	default:
+		return "", fmt.Errorf("unsupported type %d", rtype)
+	}
+}
+
+func readName(msg []byte, offset, limit int) (string, int, error) {
+	if offset < 0 || limit > len(msg) || offset > limit {
+		return "", 0, errors.New("name offset out of range")
+	}
+	var labels []string
+	next := -1
+	seen := make(map[int]bool)
+
+	for {
+		if offset >= limit {
+			return "", 0, errors.New("name exceeds limit")
+		}
+		if seen[offset] {
+			return "", 0, errors.New("compression loop")
+		}
+		seen[offset] = true
+
+		length := int(msg[offset])
+		switch {
+		case length&0xC0 == 0xC0:
+			if offset+2 > limit {
+				return "", 0, errors.New("truncated compression pointer")
+			}
+			ptr := int(binary.BigEndian.Uint16(msg[offset:offset+2]) & 0x3FFF)
+			if ptr >= len(msg) {
+				return "", 0, errors.New("compression pointer out of message")
+			}
+			if next == -1 {
+				next = offset + 2
+			}
+			offset = ptr
+			limit = len(msg)
+		case length&0xC0 != 0:
+			return "", 0, fmt.Errorf("reserved label type 0x%02x", length)
+		case length == 0:
+			if next == -1 {
+				next = offset + 1
+			}
+			if len(labels) == 0 {
+				return ".", next, nil
+			}
+			return strings.Join(labels, ".") + ".", next, nil
+		default:
+			end := offset + 1 + length
+			if end > limit {
+				return "", 0, errors.New("label exceeds limit")
+			}
+			labels = append(labels, string(msg[offset+1:end]))
+			offset = end
+		}
 	}
 }
 
@@ -219,15 +370,15 @@ func encodeName(name string) ([]byte, error) {
 		if len(part) == 0 {
 			return nil, fmt.Errorf("empty label in %q", name)
 		}
-		if len(part) > 63 {
-			return nil, fmt.Errorf("label %q longer than 63 bytes", part)
+		if len(part) > maxLabelLen {
+			return nil, fmt.Errorf("label %q longer than %d bytes", part, maxLabelLen)
 		}
 		out = append(out, byte(len(part)))
 		out = append(out, []byte(part)...)
 		total += 1 + len(parts)
 	}
-	if total > 255 {
-		return nil, fmt.Errorf("name %q longer than 255 bytes", name)
+	if total > maxNameLen {
+		return nil, fmt.Errorf("name %q longer than %d bytes", name, maxNameLen)
 	}
 	return append(out, 0), nil
 }
@@ -255,49 +406,21 @@ func buildQuery(name string, qtype uint16, txID uint16) ([]byte, error) {
 	return packet, nil
 }
 
-func readName(packet []byte, offset int) (string, int) {
-	var labels []string
-
-	end := -1
-
-	for i := 0; i < 128; i++ {
-		if offset >= len(packet) {
-			break
-		}
-
-		length := packet[offset]
-		if length&0xC0 == 0xC0 {
-			if offset+1 >= len(packet) {
-				break
-			}
-
-			if end == -1 {
-				end = offset + 2
-			}
-
-			offset = (int(length&0x3F) << 8) | int(packet[offset+1])
-			continue
-		} else if length == 0 {
-			if end == -1 {
-				end = offset + 1
-			}
-			break
-		} else {
-			offset++
-			labels = append(labels, string(packet[offset:offset+int(length)]))
-			offset += int(length)
-		}
+func canonicalName(s string) string {
+	s = strings.TrimSuffix(s, ".")
+	if s == "" {
+		return "."
 	}
+	return strings.ToLower(s) + "."
+}
 
-	if end == -1 {
-		end = offset
+func printBlock(name, typeName string, res response) {
+	fmt.Printf("query %s %s\n", name, typeName)
+	fmt.Printf("status %s\n", convertRcode(res.rcode))
+	for _, line := range res.answers {
+		fmt.Println(line)
 	}
-
-	if len(labels) == 0 {
-		return ".", end
-	}
-
-	return strings.Join(labels, ".") + ".", end
+	fmt.Println("end")
 }
 
 func convertRcode(rcode byte) string {
