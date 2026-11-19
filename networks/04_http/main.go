@@ -85,6 +85,10 @@ func parseStartLine(line []byte) (*message, string) {
 			return nil, "bad_start_line"
 		}
 
+		if !hasNoCRLF(parts[2]) {
+			return nil, "bad_start_line"
+		}
+
 		return &message{
 			isRequest: false,
 			status:    string(parts[1]),
@@ -105,11 +109,51 @@ func parseStartLine(line []byte) (*message, string) {
 		return nil, "bad_start_line"
 	}
 
+	if !validToken(parts[0]) {
+		return nil, "bad_start_line"
+	}
+	if !validRequestTarget(parts[1]) {
+		return nil, "bad_start_line"
+	}
+
 	return &message{
 		isRequest: true,
 		method:    string(parts[0]),
 		target:    string(parts[1]),
 	}, ""
+}
+
+func validToken(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if !isTokenByte(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func validRequestTarget(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if c <= 0x1F || c == 0x7F {
+			return false
+		}
+	}
+	return true
+}
+
+func hasNoCRLF(b []byte) bool {
+	for _, c := range b {
+		if c == '\r' || c == '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
@@ -141,6 +185,10 @@ func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 		}
 
 		val := bytes.Trim(line[colon+1:], " \t")
+
+		if !hasNoCRLF(val) {
+			return nil, 0, false, 0, "bad_header"
+		}
 
 		lowName := string(bytes.ToLower(name))
 		strVal := string(val)
