@@ -160,6 +160,7 @@ func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 	var headers []header
 	contentLen := -1
 	chunked := false
+	var firstContentLenStr string
 
 	for {
 		end := bytes.Index(data[pos:], crlf)
@@ -203,8 +204,13 @@ func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 				return nil, 0, false, 0, "bad_header"
 			}
 
-			if contentLen == -1 {
+			normalized := string(trimLeadingZeros(val))
+
+			if firstContentLenStr == "" {
+				firstContentLenStr = normalized
 				contentLen = parseDecimalCap(val, len(data))
+			} else if firstContentLenStr != normalized {
+				return nil, 0, false, 0, "bad_header"
 			}
 		}
 
@@ -214,6 +220,14 @@ func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 	}
 
 	return headers, contentLen, chunked, pos, ""
+}
+
+func trimLeadingZeros(b []byte) []byte {
+	i := 0
+	for i < len(b)-1 && b[i] == '0' {
+		i++
+	}
+	return b[i:]
 }
 
 func validFieldName(name []byte) bool {
