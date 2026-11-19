@@ -44,14 +44,20 @@ func main() {
 		os.Exit(2)
 	}
 
+	ip := net.ParseIP(os.Args[1])
+	if ip == nil {
+		fmt.Fprintf(os.Stderr, "invalid server address %q\n", os.Args[1])
+		os.Exit(1)
+	}
+
 	port, err := strconv.Atoi(os.Args[2])
-	if err != nil {
-		fmt.Fprint(os.Stderr, err)
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "invalid port %q\n", os.Args[2])
 		os.Exit(1)
 	}
 
 	addr := &net.UDPAddr{
-		IP:   net.ParseIP(os.Args[1]),
+		IP:   ip,
 		Port: port,
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
