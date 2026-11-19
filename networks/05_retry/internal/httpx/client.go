@@ -10,6 +10,7 @@ type Outcome struct {
 	Status     int
 	Err        error
 	RetryAfter string
+	Local      bool
 }
 
 func (o Outcome) Success() bool {
@@ -41,7 +42,7 @@ func New(URL, method, key string) *Client {
 func (c *Client) Do() Outcome {
 	req, err := http.NewRequest(c.method, c.url, nil)
 	if err != nil {
-		return Outcome{Err: err}
+		return Outcome{Err: err, Local: true}
 	}
 	if c.key != "" {
 		req.Header.Set("Idempotency-Key", c.key)

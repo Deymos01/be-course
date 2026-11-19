@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const tokenChars = "!#$%&'*+-.^_`|~"
+
 type Config struct {
 	URL         string
 	Method      string
@@ -46,6 +48,9 @@ func validateConfig(cfg Config) error {
 	if cfg.Method == "" {
 		return errors.New("method is empty")
 	}
+	if !validMethod(cfg.Method) {
+		return fmt.Errorf("invalid method %q", cfg.Method)
+	}
 
 	u, err := url.Parse(cfg.URL)
 	if err != nil {
@@ -62,4 +67,20 @@ func validateConfig(cfg Config) error {
 		return fmt.Errorf("max-attempts must be >= 1, got %d", cfg.MaxAttempts)
 	}
 	return nil
+}
+
+func validMethod(method string) bool {
+	if method == "" {
+		return false
+	}
+	for i := 0; i < len(method); i++ {
+		c := method[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case strings.IndexByte(tokenChars, c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

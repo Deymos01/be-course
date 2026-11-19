@@ -5,12 +5,16 @@ import (
 	"networks/05_retry/internal/httpx"
 )
 
-func Retryable(status int, err error) bool {
-	if err != nil {
-		return true
+func Retryable(o httpx.Outcome) bool {
+	if o.Err != nil {
+		return !o.Local
 	}
 
-	switch status {
+	return retryableStatus(o.Status)
+}
+
+func retryableStatus(code int) bool {
+	switch code {
 	case 429, 500, 502, 503, 504:
 		return true
 	default:
@@ -34,5 +38,5 @@ func MayRetry(method, key string) bool {
 func ShouldRetry(o httpx.Outcome, cfg config.Config, attempt int) bool {
 	return attempt < cfg.MaxAttempts &&
 		MayRetry(cfg.Method, cfg.Key) &&
-		Retryable(o.Status, o.Err)
+		Retryable(o)
 }
