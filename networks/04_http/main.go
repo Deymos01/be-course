@@ -305,7 +305,18 @@ func parseChunked(data []byte) ([]byte, string) {
 		size := parseHexCap(lineSize, capLim)
 
 		if size == 0 {
-			return body, ""
+			for {
+				trailEnd := bytes.Index(data[pos:], crlf)
+				if trailEnd < 0 {
+					return nil, "bad_chunk"
+				}
+
+				trailLine := data[pos : pos+trailEnd]
+				pos += trailEnd + 2
+				if len(trailLine) == 0 {
+					return body, ""
+				}
+			}
 		}
 
 		if size > len(data)-pos {
