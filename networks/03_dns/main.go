@@ -63,7 +63,7 @@ func main() {
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		fmt.Fprint(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "dial UDP: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -85,8 +85,18 @@ func main() {
 			continue
 		}
 
+		qtype, ok := codes[fields[1]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown query type %q\n", fields[1])
+			os.Exit(1)
+		}
 		txID := uint16(rand.Intn(65536))
-		if _, err := conn.Write(buildQuery(fields[0], codes[fields[1]], txID)); err != nil {
+		packet, err := buildQuery(fields[0], qtype, txID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "build query: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := conn.Write(packet); err != nil {
 			fmt.Fprintf(os.Stderr, "send query: %v\n", err)
 			os.Exit(1)
 		}
@@ -193,26 +203,45 @@ func main() {
 	}
 }
 
-func encodeName(name string) []byte {
+func encodeName(name string) ([]byte, error) {
+	if name == "." {
+		return []byte{0}, nil
+	}
 	name = strings.TrimSuffix(name, ".")
+	if name == "" {
+		return nil, errors.New("empty name")
+	}
 	parts := strings.Split(name, ".")
 
 	out := []byte{}
+	total := 1
 	for _, part := range parts {
+		if len(part) == 0 {
+			return nil, fmt.Errorf("empty label in %q", name)
+		}
+		if len(part) > 63 {
+			return nil, fmt.Errorf("label %q longer than 63 bytes", part)
+		}
 		out = append(out, byte(len(part)))
 		out = append(out, []byte(part)...)
+		total += 1 + len(parts)
 	}
-	out = append(out, 0x00)
-	return out
+	if total > 255 {
+		return nil, fmt.Errorf("name %q longer than 255 bytes", name)
+	}
+	return append(out, 0), nil
 }
 
-func buildQuery(name string, qtype uint16, txID uint16) []byte {
+func buildQuery(name string, qtype uint16, txID uint16) ([]byte, error) {
 	header := make([]byte, 12)
 	binary.BigEndian.PutUint16(header[0:2], txID)
 	binary.BigEndian.PutUint16(header[2:4], 0x0100)
 	binary.BigEndian.PutUint16(header[4:6], 1)
 
-	qname := encodeName(name)
+	qname, err := encodeName(name)
+	if err != nil {
+		return nil, err
+	}
 
 	question := make([]byte, 4)
 	binary.BigEndian.PutUint16(question[0:2], qtype)
@@ -223,7 +252,7 @@ func buildQuery(name string, qtype uint16, txID uint16) []byte {
 	packet = append(packet, qname...)
 	packet = append(packet, question...)
 
-	return packet
+	return packet, nil
 }
 
 func readName(packet []byte, offset int) (string, int) {
