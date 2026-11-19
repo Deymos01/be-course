@@ -52,12 +52,14 @@ func (c *Client) Do() Outcome {
 	}
 	defer resp.Body.Close()
 
+	retryAfter := resp.Header.Get("Retry-After")
+
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
-		return Outcome{Err: err}
+		return Outcome{Err: err, RetryAfter: retryAfter}
 	}
 
 	return Outcome{
 		Status:     resp.StatusCode,
-		RetryAfter: resp.Header.Get("Retry-After"),
+		RetryAfter: retryAfter,
 	}
 }
