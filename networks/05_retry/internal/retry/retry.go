@@ -26,9 +26,9 @@ func Run(cfg config.Config, c *httpx.Client, r report.Reporter) (ok bool, attemp
 			break
 		}
 
-		ms := backoff.Pause(attempt+1, last.RetryAfter)
-		r.Sleep(ms)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		d := backoff.Pause(attempt+1, last.RetryAfter)
+		r.Sleep(d)
+		time.Sleep(d)
 	}
 
 	return last.Success(), attempt

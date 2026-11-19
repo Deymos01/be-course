@@ -5,37 +5,39 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	baseMs = 200
-	factor = 2
-	capMs  = 2000
+	baseDelay         = 200 * time.Millisecond
+	factor            = 2
+	capDelay          = 2000 * time.Millisecond
+	maxRetryAfterSecs = int64(math.MaxInt64) / int64(time.Second)
 )
 
-func Pause(attempt int, retryAfter string) int {
-	if ms, ok := retryAfterMs(retryAfter); ok {
-		return ms
+func Pause(attempt int, retryAfter string) time.Duration {
+	if d, ok := retryAfterDelay(retryAfter); ok {
+		return d
 	}
-	return rand.IntN(Ceiling(attempt) + 1)
+	ceilingMs := int(Ceiling(attempt) / time.Millisecond)
+	return time.Duration(rand.IntN(ceilingMs+1)) * time.Millisecond
 }
 
-func Ceiling(attempt int) int {
-	interval := baseMs
+func Ceiling(attempt int) time.Duration {
+	interval := baseDelay
 	for n := 2; n <= attempt; n++ {
 		interval *= factor
-		if interval >= capMs {
-			return capMs
+		if interval >= capDelay {
+			return capDelay
 		}
 	}
 	return interval
 }
 
-func retryAfterMs(value string) (int, bool) {
-	value = strings.TrimSpace(value)
-	v, err := strconv.Atoi(value)
-	if err != nil || v < 0 || v > math.MaxInt/1000 {
+func retryAfterDelay(value string) (time.Duration, bool) {
+	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || secs < 0 || secs > maxRetryAfterSecs {
 		return 0, false
 	}
-	return v * 1000, true
+	return time.Duration(secs) * time.Second, true
 }

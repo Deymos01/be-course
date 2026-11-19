@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 type Reporter struct{ W io.Writer }
@@ -23,8 +24,8 @@ func (r Reporter) Attempt(n int, status int, err error) {
 	}
 }
 
-func (r Reporter) Sleep(ms int) {
-	fmt.Fprintf(r.W, "sleep_ms %d\n", ms)
+func (r Reporter) Sleep(d time.Duration) {
+	fmt.Fprintf(r.W, "sleep_ms %d\n", d.Milliseconds())
 }
 
 func (r Reporter) Result(ok bool, attempts int) {
