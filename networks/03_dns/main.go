@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -85,19 +86,27 @@ func main() {
 		}
 
 		txID := uint16(rand.Intn(65536))
-		conn.Write(buildQuery(fields[0], codes[fields[1]], txID))
+		if _, err := conn.Write(buildQuery(fields[0], codes[fields[1]], txID)); err != nil {
+			fmt.Fprintf(os.Stderr, "send query: %v\n", err)
+			os.Exit(1)
+		}
 		deadline := time.Now().Add(5 * time.Second)
-		conn.SetReadDeadline(deadline)
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			fmt.Fprintf(os.Stderr, "set read deadline: %v\n", err)
+			os.Exit(1)
+		}
 
 		for {
 			buffer := make([]byte, 4096)
 			n, err := conn.Read(buffer)
 			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
 					fmt.Printf("query %s %s\nstatus TIMEOUT\nend\n", fields[0], fields[1])
 					os.Exit(1)
 				}
-				continue
+				fmt.Fprintf(os.Stderr, "read response: %v\n", err)
+				os.Exit(1)
 			}
 
 			if n < 12 {
