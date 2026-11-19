@@ -20,6 +20,7 @@ type ipv4Packet struct {
 	totalLen       int
 	protocol       byte
 	fragmentOffset int
+	fragmented     bool
 }
 
 func main() {
@@ -47,6 +48,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	if ip.totalLen > len(ipSlice) {
+		return fmt.Errorf("truncated IPv4 packet: expected %d bytes, got %d", ip.totalLen, len(ipSlice))
+	}
+
 	printFields(ip.fields)
 
 	ipLen := min(ip.totalLen, len(ipSlice))
@@ -66,7 +72,7 @@ func run() error {
 			transportHeaderLen = headerLen
 
 		case 17:
-			udp, err := parseUDP(ipPayload, payloadLen)
+			udp, err := parseUDP(ipPayload, payloadLen, ip.fragmented)
 			if err != nil {
 				return err
 			}
@@ -146,6 +152,7 @@ func parseIPv4(packet []byte) (ipv4Packet, error) {
 	}
 
 	flagsAndOffset := binary.BigEndian.Uint16(packet[6:8])
+	fragmented := flagsAndOffset&0x3fff != 0
 
 	var flags []string
 
@@ -182,6 +189,7 @@ func parseIPv4(packet []byte) (ipv4Packet, error) {
 		totalLen:       totalLen,
 		protocol:       packet[9],
 		fragmentOffset: fragmentOffset,
+		fragmented:     fragmented,
 	}, nil
 }
 
@@ -251,15 +259,24 @@ func parseTCP(segment []byte, ipPayloadLen int) (fields, int, error) {
 	}, headerLen, nil
 }
 
-func parseUDP(segment []byte, ipPayloadLen int) (fields, error) {
+func parseUDP(segment []byte, ipPayloadLen int, fragmented bool) (fields, error) {
 	if ipPayloadLen < 8 || len(segment) < 8 {
 		return nil, fmt.Errorf("UDP header too short")
+	}
+
+	udpLen := int(binary.BigEndian.Uint16(segment[4:6]))
+	if udpLen < 8 {
+		return nil, fmt.Errorf("invalid UDP length: %d", udpLen)
+	}
+
+	if !fragmented && udpLen > ipPayloadLen {
+		return nil, fmt.Errorf("UDP length %d exceeds IPv4 payload length %d", udpLen, ipPayloadLen)
 	}
 
 	return fields{
 		"udp.src_port": strconv.Itoa(int(binary.BigEndian.Uint16(segment[0:2]))),
 		"udp.dst_port": strconv.Itoa(int(binary.BigEndian.Uint16(segment[2:4]))),
-		"udp.length":   strconv.Itoa(int(binary.BigEndian.Uint16(segment[4:6]))),
+		"udp.length":   strconv.Itoa(udpLen),
 	}, nil
 }
 
