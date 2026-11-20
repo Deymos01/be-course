@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func Run(cfg config.Config, c *httpx.Client, r report.Reporter) (ok bool, attempts int) {
+func Run(cfg config.Config, c *httpx.Client, r report.Reporter) (ok bool, attempts int, err error) {
 	var last httpx.Outcome
 	attempt := 0
 
@@ -26,10 +26,13 @@ func Run(cfg config.Config, c *httpx.Client, r report.Reporter) (ok bool, attemp
 			break
 		}
 
-		d := backoff.Pause(attempt+1, last.RetryAfter)
+		d, err := backoff.Pause(attempt+1, last.RetryAfter)
+		if err != nil {
+			return last.Success(), attempt, err
+		}
 		r.Sleep(d)
 		time.Sleep(d)
 	}
 
-	return last.Success(), attempt
+	return last.Success(), attempt, nil
 }

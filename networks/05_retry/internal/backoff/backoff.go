@@ -1,6 +1,8 @@
 package backoff
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"strconv"
@@ -15,12 +17,18 @@ const (
 	maxRetryAfterSecs = int64(math.MaxInt64) / int64(time.Second)
 )
 
-func Pause(attempt int, retryAfter string) time.Duration {
-	if d, ok := retryAfterDelay(retryAfter); ok {
-		return d
+var ErrRetryAfterOutOfRange = errors.New("Retry-After out of range")
+
+func Pause(attempt int, retryAfter string) (time.Duration, error) {
+	d, ok, err := retryAfterDelay(retryAfter)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return d, nil
 	}
 	ceilingMs := int(Ceiling(attempt) / time.Millisecond)
-	return time.Duration(rand.IntN(ceilingMs+1)) * time.Millisecond
+	return time.Duration(rand.IntN(ceilingMs+1)) * time.Millisecond, nil
 }
 
 func Ceiling(attempt int) time.Duration {
@@ -34,10 +42,20 @@ func Ceiling(attempt int) time.Duration {
 	return interval
 }
 
-func retryAfterDelay(value string) (time.Duration, bool) {
-	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-	if err != nil || secs < 0 || secs > maxRetryAfterSecs {
-		return 0, false
+func retryAfterDelay(value string) (time.Duration, bool, error) {
+	trim := strings.TrimSpace(value)
+	if trim == "" {
+		return 0, false, nil
 	}
-	return time.Duration(secs) * time.Second, true
+	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if errors.Is(err, strconv.ErrRange) {
+		return 0, false, fmt.Errorf("%w: %q", ErrRetryAfterOutOfRange, trim)
+	}
+	if err != nil || secs < 0 {
+		return 0, false, nil
+	}
+	if secs > maxRetryAfterSecs {
+		return 0, false, fmt.Errorf("%w: %d s", ErrRetryAfterOutOfRange, secs)
+	}
+	return time.Duration(secs) * time.Second, true, nil
 }

@@ -18,8 +18,11 @@ func main() {
 
 	r := report.New(os.Stdout)
 	c := httpx.New(cfg.URL, cfg.Method, cfg.Key)
-	ok, attempts := retry.Run(cfg, c, r)
+	ok, attempts, err := retry.Run(cfg, c, r)
 	r.Result(ok, attempts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
 
 	if !ok {
 		os.Exit(1)
