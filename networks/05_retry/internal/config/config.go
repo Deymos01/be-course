@@ -66,6 +66,9 @@ func validateConfig(cfg Config) error {
 	if cfg.MaxAttempts < 1 {
 		return fmt.Errorf("max-attempts must be >= 1, got %d", cfg.MaxAttempts)
 	}
+	if !validIdempotencyKey(cfg.Key) {
+		return fmt.Errorf("invalid idempotency key %q", cfg.Key)
+	}
 	return nil
 }
 
@@ -79,6 +82,15 @@ func validMethod(method string) bool {
 		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
 		case strings.IndexByte(tokenChars, c) >= 0:
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validIdempotencyKey(key string) bool {
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x20 || key[i] > 0x7E {
 			return false
 		}
 	}
