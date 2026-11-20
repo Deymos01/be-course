@@ -196,8 +196,17 @@ func parseResponse(msg []byte, want question) (response, error) {
 	}
 	res.rcode = byte(flags & 0x0F)
 
+	opcode := (flags >> 11) & 0x0F
+	if opcode != 0 {
+		return res, fmt.Errorf("unexpected opcode %d", opcode)
+	}
+
 	qd := int(binary.BigEndian.Uint16(msg[4:6]))
 	an := int(binary.BigEndian.Uint16(msg[6:8]))
+
+	if qd != 1 {
+		return res, fmt.Errorf("expected 1 question, got %d", qd)
+	}
 
 	offset := headerLen
 	for i := range qd {
@@ -269,9 +278,12 @@ func formatValue(rtype uint16, msg []byte, start, end int) (string, error) {
 		}
 		return netip.AddrFrom16([16]byte(rdata)).String(), nil
 	case 2, 5: // NS, CNAME
-		name, _, err := readName(msg, start, end)
+		name, next, err := readName(msg, start, end)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", typeNames[rtype], err)
+		}
+		if next != end {
+			return "", fmt.Errorf("%s: %d extra bytes after name", typeNames[rtype], end-next)
 		}
 		return name, nil
 	case 15: // MX
@@ -279,9 +291,12 @@ func formatValue(rtype uint16, msg []byte, start, end int) (string, error) {
 			return "", errors.New("MX: missing preference")
 		}
 		pref := binary.BigEndian.Uint16(rdata[:2])
-		name, _, err := readName(msg, start+2, end)
+		name, next, err := readName(msg, start+2, end)
 		if err != nil {
 			return "", fmt.Errorf("MX: %w", err)
+		}
+		if next != end {
+			return "", fmt.Errorf("MX: %d extra bytes after name", end-next)
 		}
 		return fmt.Sprintf("%d %s", pref, name), nil
 	case 16: // TXT
@@ -375,7 +390,7 @@ func encodeName(name string) ([]byte, error) {
 		}
 		out = append(out, byte(len(part)))
 		out = append(out, []byte(part)...)
-		total += 1 + len(parts)
+		total += 1 + len(part)
 	}
 	if total > maxNameLen {
 		return nil, fmt.Errorf("name %q longer than %d bytes", name, maxNameLen)
