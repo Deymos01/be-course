@@ -85,7 +85,7 @@ func parseStartLine(line []byte) (*message, string) {
 			return nil, "bad_start_line"
 		}
 
-		if !hasNoCRLF(parts[2]) {
+		if !isValidFieldValue(parts[2]) {
 			return nil, "bad_start_line"
 		}
 
@@ -147,15 +147,6 @@ func validRequestTarget(b []byte) bool {
 	return true
 }
 
-func hasNoCRLF(b []byte) bool {
-	for _, c := range b {
-		if c == '\r' || c == '\n' {
-			return false
-		}
-	}
-	return true
-}
-
 func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 	var headers []header
 	contentLen := -1
@@ -187,7 +178,7 @@ func parseHeaders(data []byte, pos int) ([]header, int, bool, int, string) {
 
 		val := bytes.Trim(line[colon+1:], " \t")
 
-		if !hasNoCRLF(val) {
+		if !isValidFieldValue(val) {
 			return nil, 0, false, 0, "bad_header"
 		}
 
@@ -316,6 +307,21 @@ func parseChunked(data []byte) ([]byte, string) {
 				if len(trailLine) == 0 {
 					return body, ""
 				}
+
+				colon := bytes.IndexByte(trailLine, ':')
+				if colon <= 0 {
+					return nil, "bad_chunk"
+				}
+
+				name := trailLine[:colon]
+				if !validFieldName(name) {
+					return nil, "bad_chunk"
+				}
+
+				val := bytes.Trim(trailLine[colon+1:], "\t")
+				if !isValidFieldValue(val) {
+					return nil, "bad_chunk"
+				}
 			}
 		}
 
@@ -332,6 +338,18 @@ func parseChunked(data []byte) ([]byte, string) {
 
 		pos += 2
 	}
+}
+
+func isValidFieldValue(b []byte) bool {
+	for _, c := range b {
+		if c < 0x20 && c != '\t' {
+			return false
+		}
+		if c == 0x7F {
+			return false
+		}
+	}
+	return true
 }
 
 func isDigits(b []byte) bool {
