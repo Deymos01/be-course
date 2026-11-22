@@ -204,12 +204,12 @@ func parseResponse(msg []byte, want question) (response, error) {
 	qd := int(binary.BigEndian.Uint16(msg[4:6]))
 	an := int(binary.BigEndian.Uint16(msg[6:8]))
 
-	if qd != 1 {
-		return res, fmt.Errorf("expected 1 question, got %d", qd)
+	if qd >1 {
+		return res, fmt.Errorf("unexpected QDCOUNT %d", qd)
 	}
 
 	offset := headerLen
-	for i := range qd {
+	if qd == 1 {
 		name, next, err := readName(msg, offset, len(msg))
 		if err != nil {
 			return res, fmt.Errorf("question name: %w", err)
