@@ -203,7 +203,7 @@ func parseResponse(msg []byte, want question) (response, error) {
 
 	qd := int(binary.BigEndian.Uint16(msg[4:6]))
 	an := int(binary.BigEndian.Uint16(msg[6:8]))
-
+	
 	if qd >1 {
 		return res, fmt.Errorf("unexpected QDCOUNT %d", qd)
 	}
@@ -219,10 +219,8 @@ func parseResponse(msg []byte, want question) (response, error) {
 		}
 		qtype := binary.BigEndian.Uint16(msg[next : next+2])
 		class := binary.BigEndian.Uint16(msg[next+2 : next+4])
-		if i == 0 {
-			if !strings.EqualFold(name, want.name) || qtype != want.qtype || class != want.class {
-				return res, errors.New("question mismatch")
-			}
+		if !strings.EqualFold(name, want.name) || qtype != want.qtype || class != want.class {
+			return res, errors.New("question mismatch")
 		}
 		offset = next + 4
 	}
