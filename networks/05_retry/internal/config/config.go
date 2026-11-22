@@ -33,6 +33,7 @@ func ParseArgs(args []string) (Config, error) {
 	}
 
 	cfg.Method = strings.ToUpper(strings.TrimSpace(cfg.Method))
+	cfg.Key = strings.TrimSpace(cfg.Key)
 
 	if err := validateConfig(cfg); err != nil {
 		return Config{}, err

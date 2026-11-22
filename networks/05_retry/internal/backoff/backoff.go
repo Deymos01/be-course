@@ -44,18 +44,27 @@ func Ceiling(attempt int) time.Duration {
 
 func retryAfterDelay(value string) (time.Duration, bool, error) {
 	trim := strings.TrimSpace(value)
-	if trim == "" {
+	if !isDecimal(trim) {
 		return 0, false, nil
 	}
-	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
-	if errors.Is(err, strconv.ErrRange) {
+	secs, err := strconv.ParseInt(trim, 10, 64)
+	if err != nil {
 		return 0, false, fmt.Errorf("%w: %q", ErrRetryAfterOutOfRange, trim)
-	}
-	if err != nil || secs < 0 {
-		return 0, false, nil
 	}
 	if secs > maxRetryAfterSecs {
 		return 0, false, fmt.Errorf("%w: %d s", ErrRetryAfterOutOfRange, secs)
 	}
 	return time.Duration(secs) * time.Second, true, nil
+}
+
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
